@@ -109,7 +109,7 @@ static pid_t snort_main_thread_pid = 0;
 void Snort::init(int argc, char** argv)
 {
     init_signals();
-    ThreadConfig::init();
+    ThreadConfig::init(); // 线程亲和性 NUMA 等配置
 
 #if defined(NOCOREFILE)
     SetNoCores();
