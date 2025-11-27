@@ -31,6 +31,8 @@
 #include "extractor_dns.h"
 #include "extractor_ftp.h"
 #include "extractor_http.h"
+#include "extractor_quic.h"
+#include "extractor_ssl.h"
 
 using namespace snort;
 
@@ -122,12 +124,20 @@ ExtractorService* ExtractorService::make_service(Extractor& ins, const ServiceCo
         srv = new FtpExtractorService(cfg.tenant_id, cfg.fields, cfg.on_events, cfg.service, ins);
         break;
 
+    case ServiceType::SSL:
+        srv = new SslExtractorService(cfg.tenant_id, cfg.fields, cfg.on_events, cfg.service, ins);
+        break;
+
     case ServiceType::CONN:
         srv = new ConnExtractorService(cfg.tenant_id, cfg.fields, cfg.on_events, cfg.service, ins);
         break;
 
     case ServiceType::DNS:
         srv = new DnsExtractorService(cfg.tenant_id, cfg.fields, cfg.on_events, cfg.service, ins);
+        break;
+
+    case ServiceType::QUIC:
+        srv = new QuicExtractorService(cfg.tenant_id, cfg.fields, cfg.on_events, cfg.service, ins);
         break;
 
     case ServiceType::IPS_BUILTIN:
@@ -225,6 +235,11 @@ void ExtractorService::validate(const ServiceConfig& cfg)
         validate_fields(FtpExtractorService::blueprint, cfg.fields);
         break;
 
+    case ServiceType::SSL:
+        validate_events(SslExtractorService::blueprint, cfg.on_events);
+        validate_fields(SslExtractorService::blueprint, cfg.fields);
+        break;
+
     case ServiceType::CONN:
         validate_events(ConnExtractorService::blueprint, cfg.on_events);
         validate_fields(ConnExtractorService::blueprint, cfg.fields);
@@ -233,6 +248,11 @@ void ExtractorService::validate(const ServiceConfig& cfg)
     case ServiceType::DNS:
         validate_events(DnsExtractorService::blueprint, cfg.on_events);
         validate_fields(DnsExtractorService::blueprint, cfg.fields);
+        break;
+
+    case ServiceType::QUIC:
+        validate_events(QuicExtractorService::blueprint, cfg.on_events);
+        validate_fields(QuicExtractorService::blueprint, cfg.fields);
         break;
 
     case ServiceType::IPS_BUILTIN:
@@ -355,6 +375,48 @@ const snort::Connector::ID& FtpExtractorService::get_log_id()
 { return log_id; }
 
 //-------------------------------------------------------------------------
+//  SslExtractorService
+//-------------------------------------------------------------------------
+
+const ServiceBlueprint SslExtractorService::blueprint =
+{
+    // events
+    {
+        "tls_metadata_event",
+    },
+    // fields
+    {
+        "version",
+        "server_name_identifier",
+        "curve",
+        "cipher",
+        "subject",
+        "issuer",
+        "validation_status",
+        "module_identifier"
+    },
+};
+
+THREAD_LOCAL Connector::ID SslExtractorService::log_id;
+
+SslExtractorService::SslExtractorService(uint32_t tenant, const std::vector<std::string>& srv_fields,
+    const std::vector<std::string>& srv_events, ServiceType s_type, Extractor& ins)
+    : ExtractorService(tenant, srv_fields, srv_events, blueprint, s_type, ins)
+{
+    for (const auto& event : get_events())
+    {
+        if (!strcmp("tls_metadata_event", event.c_str()))
+            handlers.push_back(new SslExtractor(ins, tenant_id, get_fields()));
+    }
+}
+
+const snort::Connector::ID& SslExtractorService::internal_tinit()
+{ return log_id = logger->get_id(type.c_str()); }
+
+const snort::Connector::ID& SslExtractorService::get_log_id()
+{ return log_id; }
+
+//-------------------------------------------------------------------------
 //  ConnExtractorService
 //-------------------------------------------------------------------------
 
@@ -448,6 +510,47 @@ const snort::Connector::ID& DnsExtractorService::internal_tinit()
 { return log_id = logger->get_id(type.c_str()); }
 
 const snort::Connector::ID& DnsExtractorService::get_log_id()
+{ return log_id; }
+
+//-------------------------------------------------------------------------
+//  QuicExtractorService
+//-------------------------------------------------------------------------
+
+const ServiceBlueprint QuicExtractorService::blueprint =
+{
+    // events
+    {
+        "handshake",
+    },
+    // fields
+    {
+        "version",
+        "client_initial_dcid",
+        "client_scid",
+        "server_name",
+        "client_protocol",
+        "server_scid",
+        "history"
+    },
+};
+
+THREAD_LOCAL Connector::ID QuicExtractorService::log_id;
+
+QuicExtractorService::QuicExtractorService(uint32_t tenant, const std::vector<std::string>& srv_fields,
+    const std::vector<std::string>& srv_events, ServiceType s_type, Extractor& ins)
+    : ExtractorService(tenant, srv_fields, srv_events, blueprint, s_type, ins)
+{
+    for (const auto& event : get_events())
+    {
+        if (!strcmp("handshake", event.c_str()))
+            handlers.push_back(new QuicExtractor(ins, tenant_id, get_fields()));
+    }
+}
+
+const snort::Connector::ID& QuicExtractorService::internal_tinit()
+{ return log_id = logger->get_id(type.c_str()); }
+
+const snort::Connector::ID& QuicExtractorService::get_log_id()
 { return log_id; }
 
 //-------------------------------------------------------------------------
@@ -549,8 +652,10 @@ TEST_CASE("Service Type", "[extractor]")
     {
         ServiceType http = ServiceType::HTTP;
         ServiceType ftp = ServiceType::FTP;
+        ServiceType ssl = ServiceType::SSL;
         ServiceType conn = ServiceType::CONN;
         ServiceType dns = ServiceType::DNS;
+        ServiceType quic = ServiceType::QUIC;
         ServiceType weird = ServiceType::IPS_BUILTIN;
         ServiceType notice = ServiceType::IPS_USER;
         ServiceType any = ServiceType::ANY;
@@ -558,8 +663,10 @@ TEST_CASE("Service Type", "[extractor]")
 
         CHECK_FALSE(strcmp("http", http.c_str()));
         CHECK_FALSE(strcmp("ftp", ftp.c_str()));
+        CHECK_FALSE(strcmp("ssl", ssl.c_str()));
         CHECK_FALSE(strcmp("conn", conn.c_str()));
         CHECK_FALSE(strcmp("dns", dns.c_str()));
+        CHECK_FALSE(strcmp("quic", quic.c_str()));
         CHECK_FALSE(strcmp("weird", weird.c_str()));
         CHECK_FALSE(strcmp("notice", notice.c_str()));
         CHECK_FALSE(strcmp("(not set)", any.c_str()));

@@ -29,8 +29,10 @@ public:
     {
         HTTP,
         FTP,
+        SSL,
         CONN,
         DNS,
+        QUIC,
         IPS_BUILTIN,
         IPS_USER,
         ANY,
@@ -52,10 +54,14 @@ public:
             return "http";
         case FTP:
             return "ftp";
+        case SSL:
+            return "ssl";
         case CONN:
             return "conn";
         case DNS:
             return "dns";
+        case QUIC:
+            return "quic";
         case IPS_BUILTIN:
             return "weird";
         case IPS_USER:

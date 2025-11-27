@@ -177,16 +177,36 @@ const char* MPDataBus::get_name_from_id(unsigned id)
     return nullptr;
 }
 
+bool MPDataBus::is_ready()
+{
+    const SnortConfig* sc = SnortConfig::get_conf();
+    return sc && sc->mp_dbus;
+}
+
 void MPDataBus::subscribe(const PubKey& key, unsigned eid, DataHandler* h)
 {
-    if(! SnortConfig::get_conf()->mp_dbus)
+    const SnortConfig* sc = SnortConfig::get_conf();
+    if (!sc or !sc->mp_dbus)
     {
         ErrorMessage("MPDataBus: MPDataBus not initialized\n");
         return;
     }
 
-    SnortConfig::get_conf()->mp_dbus->_subscribe(key, eid, h);
+    sc->mp_dbus->_subscribe(key, eid, h);
     MPDataBusLog("Subscribed to event ID %u\n", eid);
+}
+
+void MPDataBus::unsubscribe(const PubKey& key, unsigned eid, DataHandler* h)
+{
+    const SnortConfig* sc = SnortConfig::get_conf();
+    if (!sc or !sc->mp_dbus)
+    {
+        ErrorMessage("MPDataBus: MPDataBus not initialized\n");
+        return;
+    }
+
+    sc->mp_dbus->_unsubscribe(key, eid, h);
+    MPDataBusLog("Unsubscribed from event ID %u\n", eid);
 }
 
 bool MPDataBus::publish(unsigned pub_id, unsigned evt_id, std::shared_ptr<DataEvent> e, Flow*)
@@ -195,8 +215,7 @@ bool MPDataBus::publish(unsigned pub_id, unsigned evt_id, std::shared_ptr<DataEv
                 std::make_shared<MPEventInfo>(std::move(e), MPEventType(evt_id), pub_id);
 
     const SnortConfig *sc = SnortConfig::get_conf();
-
-    if (sc->mp_dbus == nullptr)
+    if (!sc or !sc->mp_dbus)
     {
         ErrorMessage("MPDataBus: MPDataBus not initialized\n");
         return false;
@@ -215,7 +234,8 @@ bool MPDataBus::publish(unsigned pub_id, unsigned evt_id, std::shared_ptr<DataEv
 
 void MPDataBus::register_event_helpers(const PubKey& key, unsigned evt_id, MPSerializeFunc& mp_serializer_helper, MPDeserializeFunc& mp_deserializer_helper)
 {
-    if (!SnortConfig::get_conf()->mp_dbus or !SnortConfig::get_conf()->mp_dbus->transport_layer)
+    const SnortConfig* sc = SnortConfig::get_conf();
+    if (!sc or !sc->mp_dbus or !sc->mp_dbus->transport_layer)
     {
         ErrorMessage("MPDataBus: MPDataBus or transport layer not initialized\n");
         return;
@@ -225,7 +245,7 @@ void MPDataBus::register_event_helpers(const PubKey& key, unsigned evt_id, MPSer
 
     MPHelperFunctions helpers(mp_serializer_helper, mp_deserializer_helper);
     
-    SnortConfig::get_conf()->mp_dbus->transport_layer->register_event_helpers(pub_id, evt_id, helpers);
+    sc->mp_dbus->transport_layer->register_event_helpers(pub_id, evt_id, helpers);
     MPDataBusLog("Registered event helpers for event ID %u\n", evt_id);
 }
 
@@ -268,6 +288,7 @@ void MPDataBus::process_event_queue()
 
     std::unique_lock<std::mutex> u_lock(queue_mutex);
 
+    // coverity[wait_not_in_locked_loop:FALSE]
     if( (std::cv_status::timeout == queue_cv.wait_for(u_lock, std::chrono::milliseconds(WORKER_THREAD_SLEEP))) and
         mp_event_queue->empty() )
         return;
@@ -328,7 +349,7 @@ void MPDataBus::stop_worker_thread()
     worker_thread.reset();
 }
 
-static bool compare(DataHandler* a, DataHandler* b)
+static bool compare(const DataHandler* a, const DataHandler* b)
 {
     if ( a->order and b->order )
         return a->order < b->order;
@@ -424,13 +445,13 @@ void MPDataBus::dump_stats(ControlConn *ctrlconn, const char *module_name)
         auto mod_stats = mp_pub_stats[mod_id->second];
 
         LogMessage("MPDataBus Stats for %s\n", module_name);
-        show_stats((PegCount*)&mod_stats, mp_databus_pegs, array_size(mp_databus_pegs)-1);
+        show_stats(reinterpret_cast<PegCount*>(&mod_stats), mp_databus_pegs, array_size(mp_databus_pegs)-1);
     }
     else
     {
         sum_stats();
         
-        show_stats((PegCount*)&mp_global_stats, mp_databus_pegs, array_size(mp_databus_pegs)-1);
+        show_stats(reinterpret_cast<PegCount*>(&mp_global_stats), mp_databus_pegs, array_size(mp_databus_pegs)-1);
 
         auto transport_module = ModuleManager::get_module(transport.c_str());
         if(transport_module)
@@ -525,6 +546,7 @@ void snort::MPDataBus::show_channel_status(ControlConn *ctrlconn)
     for (unsigned int i = 0; i < size; i++)
     {
         const auto& channel = transport_status[i];
+        // coverity[missing_lock:SUPPRESS]
         response += "Channel ID: " + std::to_string(channel.id) + ", Name: " + channel.name + ", Status: " + channel.get_status_string() + "\n";
     }
 
@@ -548,6 +570,38 @@ void MPDataBus::_subscribe(const PubKey& key, unsigned eid, DataHandler* h)
     _subscribe(pid, eid, h);
 }
 
+void MPDataBus::_unsubscribe(unsigned pid, unsigned eid, DataHandler* h)
+{
+    std::pair<unsigned, unsigned> key = {pid, eid};
+
+    auto it = mp_pub_sub.find(key);
+    if (it == mp_pub_sub.end())
+    {
+        MPDataBusLog("No subscribers found for publisher ID %u and event ID %u\n", pid, eid);
+        return;
+    }
+
+    SubList& subs = it->second;
+    auto handler_it = std::find(subs.begin(), subs.end(), h);
+    if (handler_it != subs.end())
+    {
+        subs.erase(handler_it);
+
+        delete h;
+        MPDataBusLog("Handler unsubscribed and deleted for publisher ID %u and event ID %u\n", pid, eid);
+        
+        if (subs.empty())
+        {
+            mp_pub_sub.erase(it);
+        }
+    }
+}
+
+void MPDataBus::_unsubscribe(const PubKey& key, unsigned eid, DataHandler* h)
+{
+    unsigned pid = get_id(key);
+    _unsubscribe(pid, eid, h);
+}
 
 bool MPDataBus::_publish(unsigned pid, unsigned eid, DataEvent& e, Flow* f)
 {

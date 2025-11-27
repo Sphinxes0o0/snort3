@@ -48,6 +48,18 @@ Inspector* InspectorManager::get_inspector(char const*, bool, const snort::Snort
 
 void appid_log(const snort::Packet*, unsigned char, char const*, ...) { }
 
+bool is_service_over_ssl(AppId appId)
+{
+    switch (appId)
+    {
+        case APP_ID_HTTPS:
+        case APP_ID_SSL:
+            return true;
+        default:
+            return false;
+    }
+}
+
 namespace snort
 {
     unsigned get_instance_id()
@@ -381,6 +393,34 @@ TEST(appid_session_api, get_first_stream_appids_for_http2)
     delete &asd.get_api();
 }
 
+TEST(appid_session_api, get_first_stream_appids_for_http3)
+{
+    SfIp ip{};
+    AppIdSession asd(IpProtocol::TCP, &ip, 1492, dummy_appid_inspector, odpctxt, 0
+#ifndef DISABLE_TENANT_ID
+    ,0
+#endif
+    );
+    asd.flow = &flow;
+    AppidChangeBits change_bits;
+    asd.set_ss_application_ids(APP_ID_HTTP3,APP_ID_HTTP3,APP_ID_HTTP3,APP_ID_HTTP3,APP_ID_HTTP3, change_bits);
+
+    AppId service, client, payload, misc;
+    asd.get_api().get_first_stream_app_ids(service, client, payload, misc);
+    CHECK_EQUAL(service, APP_ID_HTTP3);
+    CHECK_EQUAL(client, APP_ID_HTTP3);
+    CHECK_EQUAL(payload, APP_ID_HTTP3);
+    CHECK_EQUAL(misc, APP_ID_HTTP3);
+
+    service = client = payload = APP_ID_NONE;
+    asd.get_api().get_first_stream_app_ids(service, client, payload);
+    CHECK_EQUAL(service, APP_ID_HTTP3);
+    CHECK_EQUAL(client, APP_ID_HTTP3);
+    CHECK_EQUAL(payload, APP_ID_HTTP3);
+
+    delete &asd.get_api();
+}
+
 TEST(appid_session_api, get_tls_host)
 {
     AppidChangeBits change_bits;
@@ -643,6 +683,41 @@ TEST(appid_session_api, get_client_app_detect_type)
     CHECK_EQUAL(detect_type, CLIENT_APP_DETECT_APPID);
 }
 
+TEST(appid_session_api, service_none_sni_reaches_threshold)
+{
+    SfIp ip{};
+    AppIdSession asd(IpProtocol::TCP, &ip, 1492, dummy_appid_inspector, odpctxt, 0
+#ifndef DISABLE_TENANT_ID
+        ,0
+#endif
+    );
+    asd.flow = &flow;
+
+    asd.service_disco_state = APPID_DISCO_STATE_FINISHED;
+    asd.client_disco_state  = APPID_DISCO_STATE_FINISHED;
+
+    asd.clear_session_flags(APPID_SESSION_ENCRYPTED |
+                            APPID_SESSION_DECRYPTED |
+                            APPID_SESSION_HTTP_SESSION |
+                            APPID_SESSION_CONTINUE |
+                            APPID_SESSION_CLIENT_GETS_SERVER_PACKETS);
+
+    asd.set_service_id(APP_ID_NONE, asd.get_odp_ctxt());
+
+    AppidChangeBits change_bits;
+
+    char* sni = snort_strdup("random-sni.com");
+    asd.tsession->set_tls_sni(sni, 0);
+    asd.examine_ssl_metadata(change_bits, true);
+
+    asd.session_packet_count = SSL_ALLOWLIST_PKT_LIMIT;
+    bool val = asd.get_api().is_appid_inspecting_session();
+    CHECK_FALSE(val);
+
+    asd.tsession->set_tls_sni(nullptr, 0);
+    delete &asd.get_api();
+}
+
 int main(int argc, char** argv)
 {
     mock_init_appid_pegs();
@@ -650,4 +725,3 @@ int main(int argc, char** argv)
     mock_cleanup_appid_pegs();
     return rc;
 }
-

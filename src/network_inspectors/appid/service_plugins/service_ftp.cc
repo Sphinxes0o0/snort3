@@ -151,7 +151,9 @@ static inline void CopyVersionString(ServiceFTPData& fd, const uint8_t* version,
     {
         copyLen--;
     }
-    memcpy(fd.version, version, copyLen);
+    // coverity[integer_overflow]
+    if (copyLen > 0)
+        memcpy(fd.version, version, copyLen);
     fd.version[copyLen] = '\0';
 }
 
@@ -315,7 +317,7 @@ static int CheckVendorVersion(const uint8_t* data, uint16_t init_offset,
 static FtpEolReturn ftp_parse_response(const uint8_t* data, uint16_t& offset,
     uint16_t size, ServiceFTPData& fd, FTPReplyState rstate)
 {
-    for (; offset < size; ++offset)
+    while (offset < size)
     {
         if (data[offset] == 0x0D)
         {
@@ -336,6 +338,13 @@ static FtpEolReturn ftp_parse_response(const uint8_t* data, uint16_t& offset,
             fd.rstate = rstate;
             return FTP_FOUND_EOL;
         }
+
+        if (offset == UINT16_MAX)
+        {
+            return FTP_NOT_FOUND_EOL;
+        }
+
+        ++offset;
     }
     return FTP_NOT_FOUND_EOL;
 }
@@ -387,13 +396,18 @@ static int ftp_validate_reply(const uint8_t* data, uint16_t& offset, uint16_t si
     FtpEolReturn parse_ret;
     FTPReplyState tmp_state;
 
-    for (; offset < size; ++offset)
+    while (offset < size)
     {
         /* Trim any blank lines (be a little tolerant) */
-        for (; offset < size; ++offset)
+        while (offset < size)
         {
             if (data[offset] != 0x0D and data[offset] != 0x0A)
                 break;
+            if (offset == UINT16_MAX)
+            {
+                return 0;
+            }
+            ++offset;
         }
 
         switch (fd.rstate)
@@ -533,6 +547,8 @@ static int ftp_validate_reply(const uint8_t* data, uint16_t& offset, uint16_t si
                 parse_ret = ftp_parse_response(data, offset, size, fd, FTP_REPLY_LONG);
                 if (parse_ret == FTP_INCORRECT_EOL)
                     return -1;
+                if (offset == UINT16_MAX)
+                    return 0;
                 if (++offset >= size)
                 {
                     offset = size;
@@ -603,7 +619,7 @@ static int ftp_validate_reply(const uint8_t* data, uint16_t& offset, uint16_t si
         }
         if (fd.rstate == FTP_REPLY_BEGIN)
         {
-            for (; offset < size; ++offset)
+            while (offset < size)
             {
                 if (data[offset] == 0x0D)
                 {
@@ -614,9 +630,20 @@ static int ftp_validate_reply(const uint8_t* data, uint16_t& offset, uint16_t si
                 }
                 else if (!isspace(data[offset]))
                     break;
+
+                if (offset == UINT16_MAX)
+                {
+                    return 0;
+                }
+                ++offset;
             }
             return fd.code;
         }
+        if (offset == UINT16_MAX)
+        {
+            return 0;
+        }
+        ++offset;
     }
     return 0;
 }

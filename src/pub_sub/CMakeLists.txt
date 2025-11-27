@@ -38,6 +38,7 @@ set (PUB_SUB_INCLUDES
     ssh_events.h
     ssl_events.h
     stream_event_ids.h
+    dns_payload_event.h
 )
 
 add_library( pub_sub OBJECT
@@ -52,6 +53,7 @@ add_library( pub_sub OBJECT
     http_transaction_end_event.cc
     quic_events.cc
     sip_events.cc
+    ssh_events.cc
 )
 
 install (FILES ${PUB_SUB_INCLUDES}
